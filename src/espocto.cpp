@@ -762,7 +762,7 @@ void ui_run(octo_emulator* emu) {
     }
     //console_printf("\n");
   }
-  sprite.pushRotateZoom(lcd.width() / 2, 74, 0, scale, scale);
+  sprite.pushRotateZoom(lcd.width() / 2, 74, 0, scale * 1.3 , scale);
   sprite.deleteSprite();
 }
 
