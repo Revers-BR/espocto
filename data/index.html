@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>ESPocto</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: system-ui;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: #fff;
+            padding: 16px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 320px;
+            font-family: monospace;
+        }
+
+        input[type=text] {
+            width: 100%;
+        }
+
+        button,
+        input[type=submit] {
+            padding: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+
+        <h1>ESPocto</h1>
+
+        <form action="/save" method="GET">
+            <label>Name</label>
+            <input type="text" name="name" value="%NAME%">
+
+            <label>Code</label>
+            <textarea name="code">%CODE%</textarea>
+
+            <input type="submit" value="Save">
+        </form>
+
+        <p><a href="/files">Manage .ec8 files</a></p>
+
+    </div>
+</body>
+
+</html>

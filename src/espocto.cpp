@@ -1,34 +1,26 @@
 /**
- * Play CHIP-8 ROMs on an esp32-2432s024c
+ * Play CHIP-8 ROMs on an esp32-2432s028r
  */ 
-#include "credentials.h"
-#include <string.h>
-
 #define LGFX_USE_V1
+
+#include <string.h>
 #include <LovyanGFX.hpp>
 #include <lgfx/v1/LGFX_Button.hpp>
-
-#ifdef TARGET_NATIVE
-#include <LGFX_AUTODETECT.hpp>
-#include <cstdint>
-
-#define LCD_HEIGHT 240
-#define LCD_WIDTH 320
-#endif
-
-#ifdef TARGET_ESP32
 #include <SPI.h>
 #include <SPIFFS.h>
-
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <octo_emulator.h>
+
+#include "console.h"
+#include "credentials.h"
 
 class LGFX : public lgfx::LGFX_Device
 {
-lgfx::Panel_ILI9341     _panel_instance;
-lgfx::Bus_SPI       _bus_instance;   // SPI bus instance
-lgfx::Light_PWM     _light_instance;
+lgfx::Panel_ILI9341   _panel_instance;
+lgfx::Bus_SPI         _bus_instance;
+lgfx::Light_PWM       _light_instance;
 lgfx::Touch_XPT2046   _touch_instance;
 
 public:
@@ -86,7 +78,7 @@ public:
       _light_instance.config(cfg);
       _panel_instance.setLight(&_light_instance);  // Set the backlight on the panel. 
     }
-    #if 1
+
     { // Set the touch screen control (XPT2046 - SPI)
       auto cfg = _touch_instance.config();
 
@@ -114,28 +106,18 @@ public:
       _touch_instance.config(cfg);
       _panel_instance.setTouch(&_touch_instance);
     }
-  #endif
     setPanel(&_panel_instance); // Set the panel to be used. 
   }
 };
 
-#endif
-
-#include "console.h"
-//#include "octo_emulator.h"
-#include <octo_emulator.h>
-
-#ifdef TARGET_ESP32
-//AsyncWebServer server(80);
 AsyncWebServer* server;
 const char* ssid = WLAN_SSID;
 const char* password = WLAN_PASS;
-#endif
 
 char** prg;
 int prgCount = 0;
 int prgSpace = 0;
-int currPrg = 0; // octojam1title.ch8
+int currPrg = 0;
 
 int ch8Size;
 
@@ -151,11 +133,7 @@ enum {
 const int WIDTH = LCD_HEIGHT;
 const int HEIGHT = LCD_WIDTH;
 
-#if defined ( SDL_h_ )
-static LGFX lcd(WIDTH, HEIGHT, 2);
-#else
 static LGFX lcd;
-#endif
 static LGFX_Sprite sprite(&lcd);
 
 static char lbl[20][2] = { 
@@ -166,16 +144,6 @@ static char lbl[20][2] = {
 };
 
 static LGFX_Button btn[20];
-
-#ifdef TARGET_NATIVE
-#include <chrono>
-// Implement millis() for non-Arduino environments
-unsigned long millis() {
-  static auto start = std::chrono::steady_clock::now();
-  auto now = std::chrono::steady_clock::now();
-  return std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
-}
-#endif
 
 octo_emulator* emu;
 
@@ -243,7 +211,6 @@ void showCurrPrg(octo_emulator* emu) {
 }
 
 bool loadPrg(char* filename, octo_emulator* emu) {
-#ifdef TARGET_ESP32
   File f = SPIFFS.open(filename);
   if (!f) {
     return false;
@@ -252,18 +219,7 @@ bool loadPrg(char* filename, octo_emulator* emu) {
   char* info = (char*)malloc(size);
   f.read((uint8_t*)info, size);
   f.close();
-#else
-  FILE* f = fopen(filename, "r");
-  if (!f) {
-    return false;
-  }
-  fseek(f, 0, SEEK_END);
-  int size = ftell(f);
-  rewind(f);
-  char* info = (char*)malloc(size);
-  fread(info, size, 1, f);
-  fclose(f);
-#endif
+
   ch8Size = size - sizeof(octo_options);
   octo_emulator_init(emu, info + sizeof(octo_options), ch8Size, (octo_options*)info, NULL);
   free(info);
@@ -276,7 +232,6 @@ bool loadPrg(char* filename, octo_emulator* emu) {
 }
 
 bool savePrg(char* filename, octo_emulator* emu) {
-#ifdef TARGET_ESP32
   File f = SPIFFS.open(filename, FILE_WRITE);
   if (!f) {
     return false;
@@ -284,16 +239,6 @@ bool savePrg(char* filename, octo_emulator* emu) {
   f.write((unsigned char*)&emu->options, sizeof(octo_options));
   f.write(emu->ram, ch8Size);
   f.close();
-#else
-  FILE* f = fopen(filename, "w");
-  if (!f) {
-    console_printf("Can't open %s\r\n", filename);
-    return false;
-  }
-  fwrite((unsigned char*)&emu->options, sizeof(octo_options), 1, f);
-  fwrite(emu->ram, ch8Size, 1, f);
-  fclose(f);
-#endif
   return true;
 }
 
@@ -307,17 +252,13 @@ void loadCurrPrg(octo_emulator* emu) {
       }
     }
 
-
     console_printf("Invalid program index\r\n");
     return;
   }
 
   char* path = (char*) malloc(10 + strlen(prg[currPrg]));
-  #ifdef TARGET_ESP32
-    strcpy(path, "/");
-  #else
-    strcpy(path, "ec8/");
-  #endif
+  
+  strcpy(path, "/");
   strcat(path, prg[currPrg]);
   if (loadPrg(path, emu)) {
     console_printf("Loaded %s\r\n", path);
@@ -328,8 +269,17 @@ void loadCurrPrg(octo_emulator* emu) {
   free(path);
 }
 
+bool isValidEc8(const char* name) {
+  if (!name) return false;
+
+  size_t len = strlen(name);
+  if (len < 4) return false;
+
+  // termina com ".ec8"
+  return strcmp(name + len - 4, ".ec8") == 0;
+}
+
 void loadPrgInfo() {
-#ifdef TARGET_ESP32
   File d = SPIFFS.open("/");
 
   if (!d) {
@@ -344,72 +294,22 @@ void loadPrgInfo() {
   while (f) {
     const char* name = f.name();
     if (strcmp(name + strlen(name) - 4, ".ec8") != 0) {
+      f = d.openNextFile();
       continue;
     }
 
     if (prgSpace < ++prgCount) {
       prgSpace += 30;
-      //console_printf("cnt=%d. More space -> %d\r\n", prgCount, prgSpace);
       prg = (char**)realloc(prg, prgSpace * sizeof(char*));
     }
-    //console_printf("%d: %s\r\n", prgCount -1, prgInfo.name);
 
     prg[prgCount - 1] = strdup(name);
   
     f = d.openNextFile();
   }
-#else
-  // ...
-#endif
   console_printf("%d files read.\r\n", prgCount);
 }
 
-#ifdef TARGET_NATIVE
-/**
-*
-*  Audio
-*
-**/
-#include <SDL.h>
-
-#define AUDIO_FRAG_SIZE 1024
-#define AUDIO_SAMPLE_RATE (4096*8)
-
-#define UI_VOLUME 64
-
-SDL_AudioSpec audio;
-
-void audio_pump(void*user,Uint8*stream,int len){
-  octo_emulator*emu= (octo_emulator*) user;
-  double freq=4000*pow(2,(emu->pitch-64)/48.0);
-  for(int z = 0; z < len; z++) {
-    int ip = emu->osc;
-    stream[z] = !emu->had_sound 
-      ? audio.silence 
-      : ( emu->pattern[ip>>3] >> ((ip&7)^7) ) & 1 
-        ? UI_VOLUME
-        : audio.silence;
-    emu->osc = fmod(emu->osc + (freq / AUDIO_SAMPLE_RATE), 128.0);
-  }
-  emu->had_sound=0;
-}
-
-void audio_init(octo_emulator*emu){
-  SDL_memset(&audio,0,sizeof(audio));
-  audio.freq=AUDIO_SAMPLE_RATE;
-  audio.format=AUDIO_S8;
-  audio.channels=1;
-  audio.samples=AUDIO_FRAG_SIZE;
-  audio.callback=audio_pump;
-  audio.userdata=emu;
-  if (UI_VOLUME) {
-    if (SDL_OpenAudio(&audio,NULL)) {
-      printf("failed to initialize audio: %s\n", SDL_GetError());
-    }
-    else { SDL_PauseAudio(0); }
-  }
-}
-#else
 #if 0
 #include <Arduino.h>
 #include <driver/i2s.h>
@@ -468,28 +368,10 @@ void audio_init(octo_emulator *emu) {
 // Die audio_pump Funktion muss periodisch aufgerufen werden, um das Audiobuffer zu füllen.
 // Dies könnte in einem dedizierten Task oder in der main loop erfolgen, abhängig von der Struktur Ihrer Anwendung.
 #endif
-#endif
 
-#ifdef TARGET_ESP32
 void notFound(AsyncWebServerRequest* request) {
   request->send(404, "text/plain", "Not found");
 }
-
-// HTML web page to handle 3 input fields (input1, input2, input3)
-const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE HTML><html><head>
-  <meta charset="UTF-8">
-  <title>ESPocto</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  </head><body>
-  <h1>ESPocto</h1>
-  <form action="/save">
-    <p>Name<br><input type="text" name="name" value="%NAME%"></p>
-    <p>Code<br><textarea name="code" rows="10" cols="40">%CODE%</textarea></p>
-    <input type="submit" value="Save">
-  </form>
-</body></html>)rawliteral";
-#endif
 
 char* instr(octo_emulator* emu, uint16_t addr) {
   uint8_t hi = emu->ram[addr], lo = emu->ram[addr+1], op = hi >> 4;  
@@ -643,7 +525,33 @@ char* instr(octo_emulator* emu, uint16_t addr) {
   }
 }
 
-#ifdef TARGET_ESP32
+String filesInfo(const String& var) {
+  if (var == "FILELIST") {
+    String html;
+    File root = SPIFFS.open("/");
+    File file = root.openNextFile();
+
+    while (file) {
+      String name = file.name();
+
+      if (name.endsWith(".ec8")) {
+        html += "<p>";
+        html += name;
+        html += " <a href=\"/delete?file=" + name + "\">[delete]</a>";
+        html += "</p>";
+      }
+      file = root.openNextFile();
+    }
+
+    if (html.isEmpty()) {
+      html = "<p><i>No .ec8 files</i></p>";
+    }
+
+    return html;
+  }
+  return String();
+}
+
 String webInfo(const String& var) {
   if (var == "NAME") {
     char* p = strrchr(prg[currPrg], '.');
@@ -667,25 +575,15 @@ String webInfo(const String& var) {
   }
   return String();
 }
-#endif
 
 void setup(void)
 {
   lcd.init();
-#ifdef TARGET_ESP32
   lcd.setRotation(2);
-#endif
-
-// #ifdef TARGET_ESP32
-//   touch.begin();
-// #endif
-
-//  lcd.setBrightness(128);
   lcd.setColorDepth(16);
   lcd.fillScreen(0xFF000000u);
   lcd.setFont(&fonts::FreeMonoBold12pt7b);
 
-#ifdef TARGET_ESP32
   Serial.begin(115200);
 
   while (!SPIFFS.begin(true)) {
@@ -693,19 +591,12 @@ void setup(void)
     lcd.drawString("SPIFFS not initialized!", 0, 0, &fonts::FreeMonoBold12pt7b);
     delay(500);
   }
-#endif
-
   lcd.fillScreen(0xFF000000u);
 
   loadPrgInfo();
 
   emu = (octo_emulator*)calloc(1, sizeof(octo_emulator));
 
-#if TARGET_NATIVE
-  audio_init(emu);
-#endif
-
-#ifdef TARGET_ESP32
   console_printf("Connecting...\r\n");
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -716,11 +607,84 @@ void setup(void)
   server = new AsyncWebServer(80);
   console_printf("IP Address: %s\r\n", WiFi.localIP().toString().c_str());
   server->on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", index_html, webInfo);
+    request->send(SPIFFS, "/index.html", "text/html", false, webInfo);
   });
+
+  server->on("/files", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(SPIFFS, "/files.html", "text/html", false, filesInfo);
+  });
+
+  #include "esp_system.h"
+
+  server->on(
+    "/upload",
+    HTTP_POST,
+    [](AsyncWebServerRequest *request) {
+      // nada aqui, resposta será enviada antes do reboot
+      request->send(200, "text/plain", "Upload complete");
+    },
+    [](AsyncWebServerRequest *request,
+      String filename,
+      size_t index,
+      uint8_t *data,
+      size_t len,
+      bool final) {
+
+      static File uploadFile;
+      static bool valid = false;
+      static bool doReboot = false;
+
+      // início do upload
+      if (index == 0) {
+        valid = filename.endsWith(".ec8");
+
+        // lê checkbox
+        doReboot = request->hasParam("reboot", true);
+
+        if (!valid) return;
+
+        String path = "/" + filename;
+        if (SPIFFS.exists(path)) SPIFFS.remove(path);
+        uploadFile = SPIFFS.open(path, FILE_WRITE);
+      }
+
+      if (!valid) return;
+
+      if (uploadFile) {
+        uploadFile.write(data, len);
+      }
+
+      if (final) {
+        if (uploadFile) uploadFile.close();
+
+        console_printf("Upload complete (%s)\r\n",
+                      doReboot ? "reboot" : "no reboot");
+
+        if (doReboot) {
+          delay(150);
+          esp_restart();
+        }
+      }
+    }
+  );
+
+  server->on("/delete", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!request->hasParam("file")) {
+      request->redirect("/files");
+      return;
+    }
+
+    String filename = request->getParam("file")->value();
+
+    if (filename.endsWith(".ec8") && SPIFFS.exists(filename)) {
+      SPIFFS.remove(filename);
+    }
+
+    request->redirect("/files");
+  });
+
   server->onNotFound(notFound);
   server->begin();
-#endif
 
   loadCurrPrg(emu);
   drawButtons();
@@ -887,18 +851,12 @@ void handleTouchMain(octo_emulator* emu, int touchX, int touchY) {
       btn[i].press(true);
       btn[i].drawButton(true);
 
-      //lcd.fillRect(218, 0, 22, 14, 0xFF996600u);
-      //lcd.setTextColor(0xFFFFCC00u);
-      //lcd.drawString(lbl[i], 218, 0, &fonts::FreeMono9pt7b);
-
-      //lcd.fillRect(230, 0, 10, 18, 0xFFFFCC00u);
       lcd.setTextColor(0xFF996600u, 0xFFFFCC00u);
       lcd.drawString(lbl[i], 228, 0, &fonts::FreeMonoBold9pt7b);
       lcd.setTextColor(0xFFFFCC00u, 0xFF996600u);
 
       std::int8_t b = hexButton(i);
-      //console_printf("btn %d\r\n", b);
-
+  
       if (btn[i].justPressed()) {
         if (isMonitor) {
           if (b == KEY_LEFT) {
@@ -919,7 +877,6 @@ void handleTouchMain(octo_emulator* emu, int touchX, int touchY) {
           else
           if (b == KEY_GO) {
             console_printf("Saving...\r\n");
-            //showSavePage();
           }
           else
           if (b == KEY_MONITOR) {
@@ -1019,22 +976,9 @@ void loop(void)
     uint8_t gesture;
     uint16_t touchX, touchY;
 
-#ifdef TARGET_ESP32
     touched = lcd.getTouch(&touchX, &touchY);
-#endif
-
-#ifdef TARGET_NATIVE
- lgfx::touch_point_t new_tp;
-
-  touched = lcd.getTouch(&new_tp);
-  touchX = new_tp.x;
-  touchY = new_tp.y;
-#endif
 
     if (touched) {
-    //if (lcd.getTouch(&touchX, &touchY)) {
-      //console_printf("touched %d %d\r\n", touchX, touchY);
-
       switch (page) {
         case PAGE_MAIN:
           handleTouchMain(emu, touchX, touchY);
