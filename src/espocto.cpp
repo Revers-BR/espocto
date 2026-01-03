@@ -4,8 +4,6 @@
 #include "credentials.h"
 #include <string.h>
 
-#define SD_CS 5 
-
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <lgfx/v1/LGFX_Button.hpp>
@@ -20,20 +18,18 @@
 
 #ifdef TARGET_ESP32
 #include <SPI.h>
-#include <SD.h>
+#include <SPIFFS.h>
 
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-
-#include "CST820.h"
 
 class LGFX : public lgfx::LGFX_Device
 {
 lgfx::Panel_ILI9341     _panel_instance;
 lgfx::Bus_SPI       _bus_instance;   // SPI bus instance
 lgfx::Light_PWM     _light_instance;
-//lgfx::Touch_CST816S     _touch_instance;
+lgfx::Touch_XPT2046   _touch_instance;
 
 public:
   LGFX(void)
@@ -59,7 +55,7 @@ public:
     { // Set the display panel control.
       auto cfg = _panel_instance.config();    // Gets the structure for display panel settings.
       cfg.pin_cs           =    ILI9341_SPI_CONFIG_CS_GPIO_NUM;  // Pin number to which CS is connected (-1 = disable) 
-      cfg.pin_rst          =    CST816S_TOUCH_CONFIG_RST_GPIO_NUM;  // Pin number to which RST is connected (-1 = disable) 
+      cfg.pin_rst          =    -1;  // Pin number to which RST is connected (-1 = disable) 
       cfg.pin_busy         =    -1;  // Pin number to which BUSY is connected (-1 = disable) 
       cfg.memory_width     =   240;  // Maximum width supported by driver IC 
       cfg.memory_height    =   320;  // Maximum height supported by driver IC 
@@ -90,38 +86,44 @@ public:
       _light_instance.config(cfg);
       _panel_instance.setLight(&_light_instance);  // Set the backlight on the panel. 
     }
-#if 0
-    { // Set the touch screen control. (Delete if not needed)
+    #if 1
+    { // Set the touch screen control (XPT2046 - SPI)
       auto cfg = _touch_instance.config();
-      cfg.x_min      = 0;    // Minimum X value (raw value) obtained from touch screen 
-      cfg.x_max      = CST816S_TOUCH_CONFIG_X_MAX;  // Maximum X value (raw value) obtained from the touch screen 
-      cfg.y_min      = 0;    // Minimum Y value (raw value) obtained from touch screen
-      cfg.y_max      = CST816S_TOUCH_CONFIG_Y_MAX;  // Maximum Y value (raw value) obtained from the touch screen 
-      cfg.pin_int    = CST816S_TOUCH_CONFIG_INT_GPIO_NUM;   // Pin number to which INT is connected 
 
-      cfg.i2c_port = CST816S_I2C_HOST;
-      cfg.i2c_addr = 0x15;
-      cfg.pin_sda  = CST816S_I2C_CONFIG_SDA_IO_NUM;
-      cfg.pin_scl  = CST816S_I2C_CONFIG_SCL_IO_NUM;
-      cfg.freq = CST816S_I2C_CONFIG_MASTER_CLK_SPEED;
+      // --- Calibração (ajuste se necessário) ---
+      cfg.x_max = 200;
+      cfg.x_min = 3800;
+      cfg.y_min = 200;
+      cfg.y_max = 3800;
+
+      // --- Pinos ---
+      cfg.pin_int  = XPT2046_TOUCH_CONFIG_INT_GPIO_NUM;   // INT não usado (pode colocar se existir)
+      cfg.pin_mosi   = XPT2046_SPI_BUS_MOSI_IO_NUM;
+      cfg.pin_miso   = XPT2046_SPI_BUS_MISO_IO_NUM;
+      cfg.pin_sclk   = XPT2046_SPI_BUS_SCLK_IO_NUM;
+      cfg.pin_cs   = XPT2046_SPI_CONFIG_CS_GPIO_NUM;   // CS do touch (CYD 2.8 normalmente GPIO33)
+      cfg.bus_shared = false; // Compartilha SPI com o display
+
+      // --- SPI ---
+      cfg.spi_host = XPT2046_SPI_HOST; // MESMO SPI do display
+      cfg.freq     = 1000000;  // 1 MHz (estável)
+
+      // --- Mapeamento de rotação ---
+      cfg.offset_rotation = 2;
 
       _touch_instance.config(cfg);
-      _panel_instance.setTouch(&_touch_instance);  // Set the touch screen on the panel. 
+      _panel_instance.setTouch(&_touch_instance);
     }
-#endif
+  #endif
     setPanel(&_panel_instance); // Set the panel to be used. 
   }
 };
 
-#define I2C_SDA 33
-#define I2C_SCL 32
-#define TP_RST 25
-#define TP_INT 21
-CST820 touch(I2C_SDA, I2C_SCL, TP_RST, TP_INT);
 #endif
 
 #include "console.h"
-#include "octo_emulator.h"
+//#include "octo_emulator.h"
+#include <octo_emulator.h>
 
 #ifdef TARGET_ESP32
 //AsyncWebServer server(80);
@@ -133,7 +135,7 @@ const char* password = WLAN_PASS;
 char** prg;
 int prgCount = 0;
 int prgSpace = 0;
-int currPrg = 52; // octojam1title.ch8
+int currPrg = 0; // octojam1title.ch8
 
 int ch8Size;
 
@@ -242,7 +244,7 @@ void showCurrPrg(octo_emulator* emu) {
 
 bool loadPrg(char* filename, octo_emulator* emu) {
 #ifdef TARGET_ESP32
-  File f = SD.open(filename);
+  File f = SPIFFS.open(filename);
   if (!f) {
     return false;
   }
@@ -275,7 +277,7 @@ bool loadPrg(char* filename, octo_emulator* emu) {
 
 bool savePrg(char* filename, octo_emulator* emu) {
 #ifdef TARGET_ESP32
-  File f = SD.open(filename, FILE_WRITE);
+  File f = SPIFFS.open(filename, FILE_WRITE);
   if (!f) {
     return false;
   }
@@ -296,13 +298,26 @@ bool savePrg(char* filename, octo_emulator* emu) {
 }
 
 void loadCurrPrg(octo_emulator* emu) {
-  // 6 = "/ec8/" + '\0'
+  if (!prg || !prg[currPrg]) {
+    console_printf("DEBUG prg=%p currPrg=%d\r\n", prg, currPrg);
+
+    if (prg) {
+      for (int i = 0; i < 5; i++) {
+        console_printf("prg[%d]=%p\r\n", i, prg[i]);
+      }
+    }
+
+
+    console_printf("Invalid program index\r\n");
+    return;
+  }
+
   char* path = (char*) malloc(10 + strlen(prg[currPrg]));
-#ifdef TARGET_ESP32
-  strcpy(path, "/ec8/");
-#else
-  strcpy(path, "ec8/");
-#endif
+  #ifdef TARGET_ESP32
+    strcpy(path, "/");
+  #else
+    strcpy(path, "ec8/");
+  #endif
   strcat(path, prg[currPrg]);
   if (loadPrg(path, emu)) {
     console_printf("Loaded %s\r\n", path);
@@ -315,7 +330,12 @@ void loadCurrPrg(octo_emulator* emu) {
 
 void loadPrgInfo() {
 #ifdef TARGET_ESP32
-  File d = SD.open("/ec8");
+  File d = SPIFFS.open("/");
+
+  if (!d) {
+    Serial.println("Failed to open directory!");
+    return; // OU trate o erro
+  }
 
   prg = (char**)malloc(30 * sizeof(char*));
   prgSpace = 30;
@@ -656,9 +676,9 @@ void setup(void)
   lcd.setRotation(2);
 #endif
 
-#ifdef TARGET_ESP32
-  touch.begin();
-#endif
+// #ifdef TARGET_ESP32
+//   touch.begin();
+// #endif
 
 //  lcd.setBrightness(128);
   lcd.setColorDepth(16);
@@ -668,9 +688,9 @@ void setup(void)
 #ifdef TARGET_ESP32
   Serial.begin(115200);
 
-  while (!SD.begin(SD_CS)) {
-    console_printf("SD.begin failed!\r\n");
-    lcd.drawString("Insert SD card", 0, 0, &fonts::FreeMonoBold12pt7b);
+  while (!SPIFFS.begin(true)) {
+    console_printf("SPIFFS.begin failed!\r\n");
+    lcd.drawString("SPIFFS not initialized!", 0, 0, &fonts::FreeMonoBold12pt7b);
     delay(500);
   }
 #endif
@@ -1000,7 +1020,7 @@ void loop(void)
     uint16_t touchX, touchY;
 
 #ifdef TARGET_ESP32
-    touched = touch.getTouch(&touchX, &touchY, &gesture);
+    touched = lcd.getTouch(&touchX, &touchY);
 #endif
 
 #ifdef TARGET_NATIVE
